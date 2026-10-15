@@ -1,0 +1,13 @@
+#!/bin/sh
+set -eu
+cd "$(dirname "$0")/.."
+
+php tools/prepare-env.php
+docker compose config --quiet
+docker compose build app
+docker compose up -d --wait mysql_test redis
+docker compose run --rm --no-deps app composer install --no-scripts --no-interaction --prefer-dist
+docker compose run --rm --no-deps app php artisan package:discover --env=testing
+docker compose run --rm --no-deps app php artisan migrate --env=testing --force
+docker compose up -d --wait --wait-timeout 150 app scheduler worker
+docker compose exec -T app php artisan watchdog:health --env=testing

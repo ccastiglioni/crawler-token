@@ -1,0 +1,113 @@
+name: crawler-token
+
+x-php: &php
+  image: crawler-token-php:dev
+  build: .
+  user: "${LOCAL_UID:-1000}:${LOCAL_GID:-1000}"
+  working_dir: /app
+  init: true
+  restart: unless-stopped
+  env_file: .env
+  environment:
+    APP_ENV: testing
+    DB_CONNECTION: mysql
+    DB_HOST: mysql_test
+    DB_PORT: 3306
+    DB_DATABASE: crawler_token_test
+    DB_URL: ""
+    DB_SOCKET: ""
+    REDIS_CLIENT: predis
+    REDIS_HOST: redis
+    REDIS_URL: ""
+    QUEUE_CONNECTION: redis
+    CACHE_STORE: redis
+  volumes:
+    - .:/app
+  depends_on:
+    mysql_test:
+      condition: service_healthy
+    redis:
+      condition: service_healthy
+  logging:
+    driver: json-file
+    options:
+      max-size: "10m"
+      max-file: "3"
+
+services:
+  app:
+    <<: *php
+    ports:
+      - "127.0.0.1:${APP_PORT:-18080}:8000"
+    healthcheck:
+      test: ["CMD", "php", "-r", "exit(@file_get_contents('http://127.0.0.1:8000/health') === false ? 1 : 0);"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
+  scheduler:
+    <<: *php
+    command: ["php", "artisan", "schedule:work", "--env=testing"]
+    stop_grace_period: 90s
+    healthcheck:
+      test: ["CMD", "php", "artisan", "watchdog:health", "--component=scheduler", "--quiet", "--env=testing"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 90s
+
+  worker:
+    <<: *php
+    command: ["php", "artisan", "queue:work", "redis", "--queue=maintenance,default", "--sleep=2", "--tries=3", "--backoff=10", "--timeout=60", "--memory=192", "--max-time=3600", "--env=testing"]
+    stop_grace_period: 90s
+    healthcheck:
+      test: ["CMD", "php", "artisan", "watchdog:health", "--component=worker", "--quiet", "--env=testing"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 90s
+
+  mysql_test:
+    image: mysql:8.4@sha256:24989179f58856db763f418010c1169fecc944e3ec1ea7e921572d83eb070f70
+    restart: unless-stopped
+    environment:
+      MYSQL_DATABASE: crawler_token_test
+      MYSQL_USER: "${DB_USERNAME:-watchdog}"
+      MYSQL_PASSWORD: "${DB_PASSWORD:?Execute php tools/prepare-env.php}"
+      MYSQL_ROOT_PASSWORD: "${MYSQL_ROOT_PASSWORD:?Execute php tools/prepare-env.php}"
+    volumes:
+      - mysql_test_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD-SHELL", "MYSQL_PWD=\"$$MYSQL_PASSWORD\" mysql --protocol=TCP -h 127.0.0.1 -u \"$$MYSQL_USER\" \"$$MYSQL_DATABASE\" -e 'SELECT 1' >/dev/null 2>&1"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  redis:
+    image: redis:7.4-alpine@sha256:858f009f9709ce576febc734aa78b8f6d624b82571f9ddb6bda4377c833b3499
+    restart: unless-stopped
+    command: ["redis-server", "/usr/local/etc/redis/redis.conf"]
+    volumes:
+      - redis_data:/data
+      - ./docker/redis/redis.conf:/usr/local/etc/redis/redis.conf:ro
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  mysql_test_data:
+  redis_data:
